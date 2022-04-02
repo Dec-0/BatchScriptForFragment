@@ -14,7 +14,7 @@ use BedRelated::Bed;
 
 my ($HelpFlag,$BinList,$BeginTime);
 my $ThisScriptName = basename $0;
-my ($Bam,$File4InsertInfo,$MinSize,$MaxSize,$File4Cyto,$Bed,$File4Mark,$Mode4SizeInfo,$Flag4Single,$Flag4ListCheck,$Flag4Area,$ExtendLen,$Dir,$Samtools,$Bedtools);
+my ($Bam,$File4InsertInfo,$MinSize,$MaxSize,$File4Cyto,$Bed,$File4Mark,$Mode4SizeInfo,$Flag4Single,$Flag4EndPos,$Flag4ListCheck,$Flag4Area,$ExtendLen,$Dir,$Samtools,$Bedtools);
 my $HelpInfo = <<USAGE;
 
  $ThisScriptName
@@ -27,6 +27,9 @@ my $HelpInfo = <<USAGE;
   和v1版本相比，修复了一些bug。该版本可以当作正式版。
   v1版本本质上统计的是正向的片段长度信息（bam中第9列为正）。
   本版本会默认统计正/负的所有信息并去重，也可以指定统计正或者负的信息。
+  
+  和v2.0相比：
+    1. 针对单点/区间统计新增一个模式，当选中时将由只统计长度数量，改为同时记录长度及对应起始坐标，便于回溯基因组序列信息。
 
  -i      ( Optional ) Bam file;
  -o      ( Optional ) File for result;
@@ -57,6 +60,8 @@ my $HelpInfo = <<USAGE;
  # 片段信息的统计维度，正、负或者都要
  -mode   ( Optional ) Mode for the size collection type, + or - or +/- (left, right or all ,default: all);
                       用于指定片段信息的统计模式，只统计正的（left）、负的（right）或者二者都有（all，默认）；
+ -end    ( Optional ) If collect info for 5\'End position (with -pos only, only effective when -s/-a specified);
+                      假如在统计片段长度的同时，还需要统计每条插入片段对应的起始坐标。指定‘-end’即可。
  
  -bin    ( Optional ) List for searching of related bin or scripts; 
  -h      ( Optional ) Help infomation;
@@ -75,6 +80,7 @@ GetOptions(
 	'a!' => \$Flag4Area,
 	'm:s' => \$File4Mark,
 	'mode:s' => \$Mode4SizeInfo,
+	'end!' => \$Flag4EndPos,
 	'bin:s' => \$BinList,
 	'h!' => \$HelpFlag
 ) or die $HelpInfo;
@@ -188,14 +194,15 @@ if(1)
 	if($MergeBed && $Flag4Single)
 	{
 		# 统计所有信息；
-		my %SizeInfo = %{SizeInfoOfSingleOnBed2($Bam,$Samtools,$MergeBed,$MinSize,$MaxSize,$Mode4SizeInfo)};
+		my %SizeInfo = %{SizeInfoOfSingleOnBed2($Bam,$Samtools,$MergeBed,$MinSize,$MaxSize,$Mode4SizeInfo,$Flag4EndPos)};
 		
 		# 逐个点整理输出；
 		open(BED,"cat $MergeBed |") or die $! unless($MergeBed =~ /\.gz$/);
 		open(BED,"zcat $MergeBed |") or die $! if($MergeBed =~ /\.gz$/);
 		open(IN,"> $File4InsertInfo") or die $! unless($File4InsertInfo =~ /\.gz$/);
 		open(IN,"| gzip > $File4InsertInfo") or die $! if($File4InsertInfo =~ /\.gz$/);
-		print IN join("\t","#Chr","Pos",@Size),"\n";
+		print IN join("\t","#Chr","Pos",@Size),"\n" unless($Flag4EndPos);
+		print IN join("\t","#Chr","Pos","StringForSize","StringFor5Pos"),"\n" if($Flag4EndPos);
 		while(my $Line = <BED>)
 		{
 			chomp $Line;
@@ -203,14 +210,30 @@ if(1)
 			for my $i ($Cols[1] + 1 .. $Cols[2])
 			{
 				my $Key = join("\t",$Cols[0],$i);
-				my @SingleSizeInfo = ();
-				for my $j (0 .. $SizeRange)
-				{
-					$SizeInfo{$Key}[$j] = 0 unless($SizeInfo{$Key}[$j]);
-					$SingleSizeInfo[$j] = $SizeInfo{$Key}[$j];
-				}
 				
-				print IN join("\t",$Key,@SingleSizeInfo),"\n";
+				if($Flag4EndPos)
+				{
+					my (@SSize,@SPos) = ();
+					for my $j (0 .. $#{$SizeInfo{$Key}})
+					{
+						my @SItems = split /,/, $SizeInfo{$Key}[$j];
+						push @SSize, $SItems[1];
+						push @SPos, $SItems[0];
+					}
+					my $String4Size = join(",",@SSize);
+					my $String4Pos = join(",",@SPos);
+					print IN join("\t",$Key,$String4Size,$String4Pos),"\n";
+				}
+				else
+				{
+					my @SingleSizeInfo = ();
+					for my $j (0 .. $SizeRange)
+					{
+						$SizeInfo{$Key}[$j] = 0 unless($SizeInfo{$Key}[$j]);
+						$SingleSizeInfo[$j] = $SizeInfo{$Key}[$j];
+					}
+					print IN join("\t",$Key,@SingleSizeInfo),"\n";
+				}
 			}
 		}
 		close BED;
@@ -222,11 +245,19 @@ if(1)
 		# 假如不指定Mark分类标签，则按Bed行统计；
 		my $Flag4Mark = "";
 		$Flag4Mark = $File4Mark2 if($File4Mark2);
-		my %SizeInfo = %{SizeInfoOfMultiArea2($Bam,$Samtools,$MergeBed,$Flag4Mark,$MinSize,$MaxSize,$Mode4SizeInfo)};
+		my %SizeInfo = %{SizeInfoOfMultiArea2($Bam,$Samtools,$MergeBed,$Flag4Mark,$MinSize,$MaxSize,$Mode4SizeInfo,$Flag4EndPos)};
 		open(IN,"> $File4InsertInfo") or die $! unless($File4InsertInfo =~ /\.gz$/);
 		open(IN,"| gzip > $File4InsertInfo") or die $! if($File4InsertInfo =~ /\.gz$/);
-		print IN join("\t","#Mark",@Size),"\n" if($Flag4Mark);
-		print IN join("\t","#Chr","From","To",@Size),"\n" unless($Flag4Mark);
+		if($Flag4Mark)
+		{
+			print IN join("\t","#Mark",@Size),"\n" unless($Flag4EndPos);
+			print IN join("\t","#Mark","StringForSize","StringFor5Pos"),"\n" if($Flag4EndPos);
+		}
+		else
+		{
+			print IN join("\t","#Chr","From","To",@Size),"\n" unless($Flag4EndPos);
+			print IN join("\t","#Chr","From","To","StringForSize","StringFor5Pos"),"\n" if($Flag4EndPos);
+		}
 		foreach my $Mark (keys %SizeInfo)
 		{
 			my $CMark = $Mark;
@@ -235,7 +266,24 @@ if(1)
 				my @Items = split /_/, $Mark;
 				$CMark = join("\t",@Items);
 			}
-			print IN join("\t",$CMark,@{$SizeInfo{$Mark}}),"\n";
+			
+			if($Flag4EndPos)
+			{
+				my (@SSize,@SPos) = ();
+				for my $j (0 .. $#{$SizeInfo{$Mark}})
+				{
+					my @SItems = split /,/, $SizeInfo{$Mark}[$j];
+					push @SSize, $SItems[1];
+					push @SPos, $SItems[0];
+				}
+				my $String4Size = join(",",@SSize);
+				my $String4Pos = join(",",@SPos);
+				print IN join("\t",$CMark,$String4Size,$String4Pos),"\n";
+			}
+			else
+			{
+				print IN join("\t",$CMark,@{$SizeInfo{$Mark}}),"\n";
+			}
 		}
 		close IN;
 		`rm $Flag4Mark` if($Flag4Mark && -s $Flag4Mark);
