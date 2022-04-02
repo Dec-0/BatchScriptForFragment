@@ -14,7 +14,7 @@ sub BinListGet
 	my $BinList = $Bin . "/.BinList.xls";
 	return $BinList if(-s $BinList);
 	
-	$BinList = "./Scripts/.BinList.xls";
+	$BinList = "/biobiggen/data/headQuarter/user/xiezhangdong/Scripts/.BinList.xls";
 	die "[ Error ] File not exist ($BinList).\n" unless(-s $BinList);
 	
 	return $BinList;

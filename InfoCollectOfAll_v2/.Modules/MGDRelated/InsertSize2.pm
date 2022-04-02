@@ -8,9 +8,12 @@ require Exporter;
 use BamRelated::BaseAndQual;
 
 # 统计给定Bed区间内所有单个位点对应的片段信息，由于有了SizeInfoOfSingleOnBed因此名称为SizeInfoOfSingleOnBed2。
+# 同时也可以指定统计的模式，只统计+、-或者二者同时统计。
 sub SizeInfoOfSingleOnBed2
 {
-	my ($Bam,$Samtools,$Bed,$MinSize,$MaxSize) = @_;
+	my ($Bam,$Samtools,$Bed,$MinSize,$MaxSize,$Mode4SizeInfo,$Flag4EndPos) = @_;
+	$Mode4SizeInfo = "all" unless($Mode4SizeInfo);
+	die "[ Error ] Mode4SizeInfo not correct ($Mode4SizeInfo).\n" unless($Mode4SizeInfo eq "left" || $Mode4SizeInfo eq "right" || $Mode4SizeInfo eq "all");
 	
 	# bam、samtools和bed文件需要指定；
 	die "[ Error ] Bam samtools or bed not specified.\n" unless($Bam && $Samtools && $Bed);
@@ -61,30 +64,38 @@ sub SizeInfoOfSingleOnBed2
 		my ($SegFrom,$SegTo) = ($From,$To);
 		if($Cols[8] > 0)
 		{
+			next if($Mode4SizeInfo eq "right");
 			$SegTo = $SegFrom + $Cols[8] - 1;
 		}
 		else
 		{
-			# 判断正向序列是否已经被统计过或者即将被统计，也就是是否在相关位点列表内；
-			my $PairFrom = $Cols[7];
-			my $PairTo = $PairFrom - $Cols[8] - 1;
-			my $MatchFlag = 0;
-			for my $i ($PairFrom .. $PairTo)
+			next if($Mode4SizeInfo eq "left");
+			
+			if($Mode4SizeInfo eq "all")
 			{
-				my $Key = join("\t",$Chr,$i);
-				if($Flag4Pos{$Key})
+				# 判断正向序列是否已经被统计过或者即将被统计，也就是是否在相关位点列表内；
+				my $PairFrom = $Cols[7];
+				#my $PairTo = $PairFrom - $Cols[8] - 1;
+				my $PairTo = $PairFrom + length($Cols[9]) - 1;
+				my $MatchFlag = 0;
+				for my $i ($PairFrom .. $PairTo)
 				{
-					$MatchFlag = 1;
-					last;
+					my $Key = join("\t",$Chr,$i);
+					if($Flag4Pos{$Key})
+					{
+						$MatchFlag = 1;
+						last;
+					}
 				}
+				next if($MatchFlag);
 			}
-			next if($MatchFlag);
 			
 			$SegFrom = $SegTo + $Cols[8] + 1;
 		}
 		
 		# 需要记录的下标；
 		my $Id = $SegTo - $SegFrom + 1 - $MinSize;
+		my $SegLen = $SegTo - $SegFrom + 1;
 		
 		# 找到对应的第一个点
 		my $CurrentKey = "";
@@ -100,8 +111,17 @@ sub SizeInfoOfSingleOnBed2
 		# 跳跃定位；
 		while($CurrentKey)
 		{
-			$SizeInfo{$CurrentKey}[$Id] = 0 unless($SizeInfo{$CurrentKey}[$Id]);
-			$SizeInfo{$CurrentKey}[$Id] ++;
+			# 统计长度以及5’起始坐标信息；
+			if($Flag4EndPos)
+			{
+				push @{$SizeInfo{$CurrentKey}}, "$SegFrom,$SegLen";
+			}
+			# 只统计长度数量信息；
+			else
+			{
+				$SizeInfo{$CurrentKey}[$Id] = 0 unless($SizeInfo{$CurrentKey}[$Id]);
+				$SizeInfo{$CurrentKey}[$Id] ++;
+			}
 			
 			$CurrentKey = $Flag4Pos{$CurrentKey};
 			last if($CurrentKey eq "None");
@@ -111,12 +131,15 @@ sub SizeInfoOfSingleOnBed2
 	}
 	close BAM;
 	
-	# 没有被统计到的点也需要记录为0;
-	foreach my $Key (keys %Flag4Pos)
+	unless($Flag4EndPos)
 	{
-		for my $i (0 .. $SizeRange)
+		# 没有被统计到的点也需要记录为0;
+		foreach my $Key (keys %Flag4Pos)
 		{
-			$SizeInfo{$Key}[$i] = 0 unless($SizeInfo{$Key}[$i]);
+			for my $i (0 .. $SizeRange)
+			{
+				$SizeInfo{$Key}[$i] = 0 unless($SizeInfo{$Key}[$i]);
+			}
 		}
 	}
 	
@@ -124,10 +147,13 @@ sub SizeInfoOfSingleOnBed2
 }
 
 # 统计给定Bed区间内指定区域对应的片段信息，由于有了SizeInfoOfMultiArea因此名称为SizeInfoOfMultiArea2。
+# 同时也可以指定统计的模式，只统计+、-或者二者同时统计。
 sub SizeInfoOfMultiArea2
 {
 	# File4Mark记录Bed文件中每行bed对应的标签，假如不指定该文件，那么以染色体号为准；
-	my ($Bam,$Samtools,$Bed,$File4Mark,$MinSize,$MaxSize) = @_;
+	my ($Bam,$Samtools,$Bed,$File4Mark,$MinSize,$MaxSize,$Mode4SizeInfo,$Flag4EndPos) = @_;
+	$Mode4SizeInfo = "all" unless($Mode4SizeInfo);
+	die "[ Error ] Mode4SizeInfo not correct ($Mode4SizeInfo).\n" unless($Mode4SizeInfo eq "left" || $Mode4SizeInfo eq "right" || $Mode4SizeInfo eq "all");
 	
 	# bam、samtools和bed文件需要指定；
 	die "[ Error ] Bam samtools or bed not specified.\n" unless($Bam && $Samtools && $Bed);
@@ -158,8 +184,8 @@ sub SizeInfoOfMultiArea2
 		chomp $Line;
 		my @Cols = split /\t/, $Line;
 		$Cols[1] ++;
-		# 默认情况下标记为染色体号；
-		my $Mark = $Cols[0];
+		# 默认情况下标记为该行ID；
+		my $Mark = join("_",@Cols[0 .. 2]);
 		if($File4Mark)
 		{
 			$Mark = <MARK>;
@@ -200,30 +226,37 @@ sub SizeInfoOfMultiArea2
 		my ($SegFrom,$SegTo) = ($From,$To);
 		if($Cols[8] > 0)
 		{
+			next if($Mode4SizeInfo eq "right");
 			$SegTo = $SegFrom + $Cols[8] - 1;
 		}
 		else
 		{
-			# 判断正向序列是否已经被统计过或者即将被统计，也就是是否在相关位点列表内；
-			my $PairFrom = $Cols[7];
-			my $PairTo = $PairFrom - $Cols[8] - 1;
-			my $MatchFlag = 0;
-			for my $i ($PairFrom .. $PairTo)
-			{
-				my $Key = join("\t",$Chr,$i);
-				if($Flag4Pos{$Key})
-				{
-					$MatchFlag = 1;
-					last;
-				}
-			}
-			next if($MatchFlag);
+			next if($Mode4SizeInfo eq "left");
 			
+			if($Mode4SizeInfo eq "all")
+			{
+				# 判断正向序列是否已经被统计过或者即将被统计，也就是是否在相关位点列表内；
+				my $PairFrom = $Cols[7];
+				#my $PairTo = $PairFrom - $Cols[8] - 1;
+				my $PairTo = $PairFrom + length($Cols[9]) - 1;
+				my $MatchFlag = 0;
+				for my $i ($PairFrom .. $PairTo)
+				{
+					my $Key = join("\t",$Chr,$i);
+					if($Flag4Pos{$Key})
+					{
+						$MatchFlag = 1;
+						last;
+					}
+				}
+				next if($MatchFlag);
+			}
 			$SegFrom = $SegTo + $Cols[8] + 1;
 		}
 		
 		# 需要记录的下标；
 		my $Id = $SegTo - $SegFrom + 1 - $MinSize;
+		my $SegLen = $SegTo - $SegFrom + 1;
 		
 		# 获得第一个数组下标;
 		my $BId = 0;
@@ -246,20 +279,33 @@ sub SizeInfoOfMultiArea2
 				next if($Flag4Mark{$BMark[$i]});
 				last if($BChr[$i] ne $Chr || $SegTo < $BFrom[$i]);
 				
-				$SizeInfo{$BMark[$i]}[$Id] = 0 unless($SizeInfo{$BMark[$i]}[$Id]);
-				$SizeInfo{$BMark[$i]}[$Id] ++;
+				# 统计长度以及5’起始坐标信息；
+				if($Flag4EndPos)
+				{
+					push @{$SizeInfo{$BMark[$i]}}, "$SegFrom,$SegLen";
+				}
+				# 只统计长度数量信息；
+				else
+				{
+					$SizeInfo{$BMark[$i]}[$Id] = 0 unless($SizeInfo{$BMark[$i]}[$Id]);
+					$SizeInfo{$BMark[$i]}[$Id] ++;
+				}
+				
 				$Flag4Mark{$BMark[$i]} = 1;
 			}
 		}
 	}
 	close BAM;
 	
-	# 没有被统计到的点也需要记录为0;
-	foreach my $Mark (keys %MarkInfo)
+	unless($Flag4EndPos)
 	{
-		for my $i (0 .. $SizeRange)
+		# 没有被统计到的点也需要记录为0;
+		foreach my $Mark (keys %MarkInfo)
 		{
-			$SizeInfo{$Mark}[$i] = 0 unless($SizeInfo{$Mark}[$i]);
+			for my $i (0 .. $SizeRange)
+			{
+				$SizeInfo{$Mark}[$i] = 0 unless($SizeInfo{$Mark}[$i]);
+			}
 		}
 	}
 	

@@ -4,11 +4,11 @@ package MGDRelated::InsertSize;
 # Exported name
 require Exporter;
 @ISA = qw(Exporter);
-@EXPORT = qw(SizeInfoGet SizeInfoGetOnBed SizeInfoGetOnArea SizeInfoGetOnChr SizeInfoOfSingleOnBed SizeInfoOfMultiArea Size2Percent Size2AccumPercent AccumDensity AccumDensityOnHash AccumPercent AccumPercentOnHash ISNumInRange FreqInSpecificSize);
+@EXPORT = qw(SizeInfoGet SizeInfoGetOnBed SizeInfoGetOnArea SizeInfoGetOnChr SizeInfoOfSingleOnBed SizeInfoOfMultiArea SizeCountMerge SizeCountBasedOnLo2014 SubtractOfDistrMax SubtractOfDistrMean Size2Percent Size2AccumPercent AccumDensity AccumDensityOnHash AccumPercent AccumPercentOnHash ISNumInRange FreqInSpecificSize);
 use Sort::PureNum;
 use BamRelated::BaseAndQual;
 
-# 获得对应的插入片段信息;
+# 从单变异对应的插入片段统计表中获得对应的插入片段信息;
 sub SizeInfoGet
 {
 	my ($File,$Chr,$Pos,$Seq) = @_;
@@ -155,6 +155,7 @@ sub SizeInfoOfSingleOnBed
 	my ($Bam,$Samtools,$Bed,$MinSize,$MaxSize) = @_;
 	my %SizeInfo = ();
 	
+	# 在统计单点的条件下，点与点之间是相互独立的，因此不需要考虑重叠的问题;
 	$MinSize = 1 unless($MinSize);
 	$MaxSize = 300 unless($MaxSize);
 	my $Num = $MaxSize - $MinSize;
@@ -211,8 +212,8 @@ sub SizeInfoOfMultiArea
 	
 	# 获取所有片段信息；
 	my (@AChr,@AFrom,@ATo) = ();
-	open(BED,"cat $SortBed |") or die $! unless($SortBed =~ /\.gz$/);
-	open(BED,"zcat $SortBed |") or die $! if($SortBed =~ /\.gz$/);
+	open(BED,"cat $SortBed |") or die $! unless($Bed =~ /\.gz$/);
+	open(BED,"zcat $SortBed |") or die $! if($Bed =~ /\.gz$/);
 	while(my $Line = <BED>)
 	{
 		chomp $Line;
@@ -282,6 +283,178 @@ sub SizeInfoOfMultiArea
 	}
 	
 	return \@SizeInfo;
+}
+
+# 用于合并固定行号范围内的插入片段数据（文件必须要有注释行且为非压缩文件）；
+# 其中Prefix指的就是第一列的信息；
+sub SizeCountMerge
+{
+	my ($File,$Prefix,$IdFrom,$IdTo,$tRef) = @_;
+	my @SizeInfo = ();
+	@SizeInfo = @{$tRef} if($tRef);
+	
+	my $InitialId = 0;
+	my $Header = "";
+	$Header = `cat $File | grep ^# | tail -n1` unless($File =~ /\.gz$/);
+	$Header = `zcat $File | grep ^# | tail -n1` if($File =~ /\.gz$/);
+	chomp $Header;
+	my @Items = split /\t/, $Header;
+	$Items[0] =~ s/^#//;
+	for my $i (0 .. $#Items)
+	{
+		unless($Items[$i] =~ /\D/)
+		{
+			$InitialId = $i;
+			last;
+		}
+	}
+	
+	$IdFrom = 1 unless($IdFrom);
+	unless($IdTo)
+	{
+		if($File =~ /\.gz$/)
+		{
+			$IdTo = `zcat $File | grep -v ^# | wc -l` unless($Prefix);
+			$IdTo = `zcat $File | grep -v ^# | awk '{if(\$1 == "$Prefix"){print \$0}}' | wc -l` if($Prefix);
+		}
+		else
+		{
+			$IdTo = `cat $File | grep -v ^# | wc -l` unless($Prefix);
+			$IdTo = `cat $File | grep -v ^# | awk '{if(\$1 == "$Prefix"){print \$0}}' | wc -l` if($Prefix);
+		}
+		chomp $IdTo;
+	}
+	die "[ Error ] IdTo < IdFrom.\n" unless($IdTo >= $IdFrom);
+	
+	die "[ Error ] File not exist ($File).\n" unless(-s $File);
+	if($File =~ /\.gz$/)
+	{
+		open(FI,"zcat $File | grep -v ^# | awk '{if(NR >= $IdFrom && NR <= $IdTo){print \$0}}' |") or die $! unless($Prefix);
+		open(FI,"zcat $File | grep -v ^# | awk '{if(\$1 == \"$Prefix\"){print \$0}}' | awk '{if(NR >= $IdFrom && NR <= $IdTo){print \$0}}' |") or die $! if($Prefix);
+	}
+	else
+	{
+		open(FI,"cat $File | grep -v ^# | awk '{if(NR >= $IdFrom && NR <= $IdTo){print \$0}}' |") or die $! unless($Prefix);
+		open(FI,"cat $File | grep -v ^# | awk '{if(\$1 == \"$Prefix\"){print \$0}}' | awk '{if(NR >= $IdFrom && NR <= $IdTo){print \$0}}' |") or die $! if($Prefix);
+	}
+	while(my $Line = <FI>)
+	{
+		chomp $Line;
+		my @Size = split /\t/, $Line;
+		for my $i ($InitialId .. $#Size)
+		{
+			$SizeInfo[$i - $InitialId] = 0 unless($SizeInfo[$i - $InitialId]);
+			$SizeInfo[$i - $InitialId] += $Size[$i];
+		}
+	}
+	close FI;
+	
+	return \@SizeInfo;
+}
+# 用于根据Lo et al., 2014 PNAS中的方式计算FF；
+sub SizeCountBasedOnLo2014
+{
+	my $File = $_[0];
+	my @SizeInfo = @{$_[1]};
+	
+	# 确定数字编码起始；
+	my $InitialId = -1;
+	my $Header = "";
+	$Header = `cat $File | grep ^# | tail -n1` unless($File =~ /\.gz$/);
+	$Header = `zcat $File | grep ^# | tail -n1` if($File =~ /\.gz$/);
+	chomp $Header;
+	my @HeaderItems = split /\t/, $Header;
+	$HeaderItems[0] =~ s/^#//;
+	for my $i (0 .. $#HeaderItems)
+	{
+		unless($HeaderItems[$i] =~ /\D/)
+		{
+			$InitialId = $i;
+			last;
+		}
+	}
+	
+	# 统计100到150；
+	my $NumOfShort = 0;
+	for my $i (100 .. 150)
+	{
+		my $ColId4Num = 0;
+		for my $j ($InitialId .. $#HeaderItems)
+		{
+			if($HeaderItems[$j] == $i)
+			{
+				$ColId4Num = $j;
+				last;
+			}
+		}
+		die "[ Error ] Cannot locate $j in the header of $File\.\n" if($ColId4Num < $InitialId);
+		
+		$NumOfShort += $SizeInfo[$ColId4Num - $InitialId];
+	}
+	
+	# 统计163到169；
+	my $NumOfLong = 0;
+	for my $i (163 .. 169)
+	{
+		my $ColId4Num = 0;
+		for my $j ($InitialId .. $#HeaderItems)
+		{
+			if($HeaderItems[$j] == $i)
+			{
+				$ColId4Num = $j;
+				last;
+			}
+		}
+		die "[ Error ] Cannot locate $j in the header of $File\.\n" if($ColId4Num < $InitialId);
+		
+		$NumOfLong += $SizeInfo[$ColId4Num - $InitialId];
+	}
+	
+	die "[ Error ] Num from 163 to 169 was zero (",join("\t",@SizeInfo),")\n" unless($NumOfLong > 0);
+	my $FF = $NumOfShort / $NumOfLong;
+	
+	return ($FF,$NumOfShort,$NumOfLong);
+}
+# 用于两个分布相减并给出最大值；
+sub SubtractOfDistrMax
+{
+	my @AltDistr = @{$_[0]};
+	my @RefDistr = @{$_[1]};
+	
+	for my $i (0 .. $#AltDistr)
+	{
+		$AltDistr[$i] = $AltDistr[$i] - $RefDistr[$i];
+	}
+	
+	my $Max = 0;
+	for my $i (0 .. $#AltDistr)
+	{
+		$Max = $AltDistr[$i] if(abs($AltDistr[$i]) > abs($Max));
+	}
+	
+	return $Max;
+}
+# 用于两个分布相减并给出平均值；
+sub SubtractOfDistrMean
+{
+	my @AltDistr = @{$_[0]};
+	my @RefDistr = @{$_[1]};
+	
+	for my $i (0 .. $#AltDistr)
+	{
+		$AltDistr[$i] = $AltDistr[$i] - $RefDistr[$i];
+	}
+	
+	my $Sum = 0;
+	my $Num = 0;
+	for my $i (0 .. $#AltDistr)
+	{
+		$Sum += $AltDistr[$i];
+		$Num ++;
+	}
+	my $Mean = $Sum / $Num;
+	
+	return $Mean;
 }
 
 # 将数量信息转换成比例信息；

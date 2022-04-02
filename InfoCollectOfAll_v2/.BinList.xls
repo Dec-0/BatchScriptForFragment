@@ -3,3 +3,4 @@ Bedtools	DEFAULTDIR/Softs/bedtools-2.26/bin/bedtools
 File4Cyto	DEFAULTDIR/DB/Bed/NIPT2PROV2/NIPT2_SNP_GENE_hg38_ext0.merge.mark
 MinSize	100
 MaxSize	250
+Reference	DEFAULTDIR/DB/Reference/hg38/ucsc.hg38.fasta

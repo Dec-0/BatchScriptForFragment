@@ -14,36 +14,50 @@ use BedRelated::Bed;
 
 my ($HelpFlag,$BinList,$BeginTime);
 my $ThisScriptName = basename $0;
-my ($Bam,$File4InsertInfo,$MinSize,$MaxSize,$File4Cyto,$Bed,$File4Mark,$Flag4Single,$Flag4ListCheck,$Flag4Area,$ExtendLen,$Dir,$Samtools,$Bedtools);
+my ($Bam,$File4InsertInfo,$MinSize,$MaxSize,$File4Cyto,$Bed,$File4Mark,$Mode4SizeInfo,$Flag4Single,$Flag4ListCheck,$Flag4Area,$ExtendLen,$Dir,$Samtools,$Bedtools);
 my $HelpInfo = <<USAGE;
 
  $ThisScriptName
  Auther: zhangdong_xie\@foxmail.com
 
-  This script was used to collect insert size info.
+  This script can be used to collect insert size info.
+  
   本脚本主要用于收集插入片段的长度信息。
   
-  和v1版本相比，修改如下：
-    1. 重新修改了单点及区域数据收集函数。
-    2. 新增区域标记选项。
+  和v1版本相比，修复了一些bug。该版本可以当作正式版。
+  v1版本本质上统计的是正向的片段长度信息（bam中第9列为正）。
+  本版本会默认统计正/负的所有信息并去重，也可以指定统计正或者负的信息。
 
  -i      ( Optional ) Bam file;
  -o      ( Optional ) File for result;
 
+ # 长度范围限制
  -min    ( Optional ) Minimal size for count (100);
  -max    ( Optional ) Maximal size for count (250);
- -b      ( Optional ) Bed;
+
+ # Bed文件相关
+ -b      ( Optional ) File in bed format;
+                      Bed文件，默认是3列。指定bed时按bed区域统计，否则统计全基因组。
+ -snp    ( Optional ) If need to confirm the bed was snp list;
+                      假如需要确认bed文件是否为对应的snp列表；
+ -elen   ( Optional ) The extended length for snp list;
+                      用于延申Bed区域的长度，针对收集那些应该覆盖了但没有测到的部分。
+ 
+ # 按单点统计
+ -s      ( Optional ) If collect info one point by one point (with -s only, only effective when -b specified);
+                      假如需要对bed文件中的点逐个收集信息。
+ 
+ # 按区间统计
+ -a      ( Optional ) If collect info by area (with -a only, effective when -b specified);
+                      假如按区间统计片段信息，不指定‘-m’时一行bed文件为统计单位，当指定‘-m’时以指定的第4列标签为统计单位。
  -m      ( Optional ) File of Mark for each line in Bed;
                       文件包括4列：染色体号、起始坐标、结束坐标、所属区域标记（一个标记可以对应多个bed区间）。
                       注意：该文件的前3列需要和bed文件保持一致。
- -s      ( Optional ) If collect info one point by one point (with -s only, only effective when -b specified);
-                      假如需要对bed文件中的点逐个收集信息。
- -snp    ( Optional ) If need to confirm the bed was snp list;
-                      假如需要确认bed文件是否为对应的snp列表；
- -a      ( Optional ) If collect info by area (with -a only, effective when -b specified);
-                      假如按区间统计；
- -elen   ( Optional ) The extended length for snp list;
-                      用于延申Bed区域的长度，针对收集那些应该覆盖了但没有测到的部分。
+ 
+ # 片段信息的统计维度，正、负或者都要
+ -mode   ( Optional ) Mode for the size collection type, + or - or +/- (left, right or all ,default: all);
+                      用于指定片段信息的统计模式，只统计正的（left）、负的（right）或者二者都有（all，默认）；
+ 
  -bin    ( Optional ) List for searching of related bin or scripts; 
  -h      ( Optional ) Help infomation;
 
@@ -55,11 +69,12 @@ GetOptions(
 	'min:i' => \$MinSize,
 	'max:i' => \$MaxSize,
 	'b:s' => \$Bed,
-	'm:s' => \$File4Mark,
-	's!' => \$Flag4Single,
 	'snp!' => \$Flag4ListCheck,
-	'a!' => \$Flag4Area,
 	'elen:i' => \$ExtendLen,
+	's!' => \$Flag4Single,
+	'a!' => \$Flag4Area,
+	'm:s' => \$File4Mark,
+	'mode:s' => \$Mode4SizeInfo,
 	'bin:s' => \$BinList,
 	'h!' => \$HelpFlag
 ) or die $HelpInfo;
@@ -77,12 +92,14 @@ else
 	$Dir = dirname $File4InsertInfo;
 	IfDirExist($Dir);
 	$ExtendLen = 0 unless($ExtendLen);
+	$Mode4SizeInfo = "all" unless($Mode4SizeInfo);
+	die "[ Error ] -mode not correct ($Mode4SizeInfo).\n" unless($Mode4SizeInfo eq "left" || $Mode4SizeInfo eq "right" || $Mode4SizeInfo eq "all");
 	
 	$BinList = BinListGet() if(!$BinList);
+	$MinSize = BinSearch("MinSize",$BinList,1) unless($MinSize);
+	$MaxSize = BinSearch("MaxSize",$BinList,1) unless($MaxSize);
 	$Samtools = BinSearch("Samtools",$BinList);
-	$MinSize = BinSearch("MinSize",$BinList,1);
-	$MaxSize = BinSearch("MaxSize",$BinList,1);
-	$File4Cyto = BinSearch("File4Cyto",$BinList,1);
+	$File4Cyto = BinSearch("File4Cyto",$BinList);
 }
 
 if(1)
@@ -91,13 +108,14 @@ if(1)
 	if($Flag4ListCheck && $Bed)
 	{
 		my $tBed = SNPListOnBed($Bed);
-		die "[ Error ] Could not locate the snplist for $Bed.\n" unless($tBed && -s $tBed);
+		die "[ Error ] Could not locate the snplist ($tBed) for $Bed.\n" unless($tBed && -s $tBed);
 		$Bed = $tBed;
 	}
 	
 	# 对bed延申、排序、合并以及调整区域定位文件顺序；
 	my ($MergeBed,$File4Mark2) = ();
-	if(1)
+	# 不指定Bed文件时直接忽略
+	if($Bed)
 	{
 		$Bedtools = BinSearch("Bedtools",$BinList);
 		
@@ -140,7 +158,9 @@ if(1)
 		$MergeBed = $Dir . "/" . $BaseName . ".Sort.Merge." . $RandomString . ".bed";
 		`$Bedtools merge -i $SortBed > $MergeBed`;
 		`rm $SortBed` if($SortBed && -s $SortBed);
+		printf "[ %s ] Bed file sort and merge done.\n",TimeString(time,$BeginTime);
 		
+		# 只有按区域统计时标签文件才起作用。
 		if($File4Mark && $Flag4Area)
 		{
 			$File4Mark2 = $Dir . "/" . $BaseName . ".Sort.Merge." . $RandomString . ".mark";
@@ -154,6 +174,7 @@ if(1)
 				$Mark = `cat $File4Mark | awk '{if(\$1 == "$Cols[0]" && \$2 <= $Cols[2] && \$3 >= $Cols[1]){print \$4}}' | head -n1` unless($File4Mark =~ /\.gz$/);
 				$Mark = `zcat $File4Mark | awk '{if(\$1 == "$Cols[0]" && \$2 <= $Cols[2] && \$3 >= $Cols[1]){print \$4}}' | head -n1` if($File4Mark =~ /\.gz$/);
 				chomp $Mark;
+				die "[ Error ] Unknown mark for $Line\n" unless($Mark);
 				print MARK join("\t",@Cols[0 .. 2],$Mark),"\n";
 			}
 			close MERGE;
@@ -167,7 +188,7 @@ if(1)
 	if($MergeBed && $Flag4Single)
 	{
 		# 统计所有信息；
-		my %SizeInfo = %{SizeInfoOfSingleOnBed2($Bam,$Samtools,$MergeBed,$MinSize,$MaxSize)};
+		my %SizeInfo = %{SizeInfoOfSingleOnBed2($Bam,$Samtools,$MergeBed,$MinSize,$MaxSize,$Mode4SizeInfo)};
 		
 		# 逐个点整理输出；
 		open(BED,"cat $MergeBed |") or die $! unless($MergeBed =~ /\.gz$/);
@@ -198,20 +219,28 @@ if(1)
 	# 对Bed文件按区域统计；
 	elsif($MergeBed && $Flag4Area)
 	{
+		# 假如不指定Mark分类标签，则按Bed行统计；
 		my $Flag4Mark = "";
 		$Flag4Mark = $File4Mark2 if($File4Mark2);
-		my %SizeInfo = %{SizeInfoOfMultiArea2($Bam,$Samtools,$MergeBed,$Flag4Mark,$MinSize,$MaxSize)};
+		my %SizeInfo = %{SizeInfoOfMultiArea2($Bam,$Samtools,$MergeBed,$Flag4Mark,$MinSize,$MaxSize,$Mode4SizeInfo)};
 		open(IN,"> $File4InsertInfo") or die $! unless($File4InsertInfo =~ /\.gz$/);
 		open(IN,"| gzip > $File4InsertInfo") or die $! if($File4InsertInfo =~ /\.gz$/);
-		print IN join("\t","#Mark",@Size),"\n";
+		print IN join("\t","#Mark",@Size),"\n" if($Flag4Mark);
+		print IN join("\t","#Chr","From","To",@Size),"\n" unless($Flag4Mark);
 		foreach my $Mark (keys %SizeInfo)
 		{
-			print IN join("\t",$Mark,@{$SizeInfo{$Mark}}),"\n";
+			my $CMark = $Mark;
+			unless($Flag4Mark)
+			{
+				my @Items = split /_/, $Mark;
+				$CMark = join("\t",@Items);
+			}
+			print IN join("\t",$CMark,@{$SizeInfo{$Mark}}),"\n";
 		}
 		close IN;
 		`rm $Flag4Mark` if($Flag4Mark && -s $Flag4Mark);
 	}
-	# 没有Bed文件时，按染色体分析;
+	# 或者按染色体分析，指定或不指定bed文件均可;
 	else
 	{
 		my %InsertInfo = %{SizeInfoGetOnChr($Bam,$Samtools,$MergeBed,$MinSize,$MaxSize)};
