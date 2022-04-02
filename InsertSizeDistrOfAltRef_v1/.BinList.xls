@@ -1,0 +1,5 @@
+MinSize	50
+MaxSize	300
+RScript	DEFAULTDIR/Softs/R-3.6.3/bin/Rscript
+SizeDistrVisualScript	BINDIR/MaternalAndFetalInsertDistr.r
+Script4Density	DEFAULTDIR/Scripts/MapDraw/Density4RefAlt.r

@@ -1,0 +1,5 @@
+Perl	DEFAULTDIR/Softs/perl-5.26.3/bin/perl
+Samtools	DEFAULTDIR/Softs/samtools-1.11/bin/samtools
+Bedtools	DEFAULTDIR/Softs/bedtools-2.26/bin/bedtools
+VarRelatedReadsExtractScript	DEFAULTDIR/Scripts/BamRelated/VarRelatedReadsExtract_v1/VarRelatedReadsExtract_v1.pl
+BamFltWithIdScript	DEFAULTDIR/Scripts/BamRelated/BamFltWithReadsId_v1/BamFltWithReadsId_v1.pl
